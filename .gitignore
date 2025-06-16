@@ -6,3 +6,5 @@ MrSID_DSDK*.tar.gz
 mrsid_sdk.tar.gz
 
 venv/
+
+__pycache__/
