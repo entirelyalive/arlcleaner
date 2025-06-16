@@ -1,55 +1,32 @@
 # arlcleaner
 
-Tools for converting MrSID and GeoTIFF imagery inside a container.
+A small collection of Docker helpers for converting MrSID and GeoTIFF imagery into GeoJPEG files.
 
-## Building the Docker image
+## Prerequisites
+* Docker installed on the host.
+* (Optional) the proprietary MrSID SDK archive if you need to process `.sid` images.  Place the archive in the project root and pass its filename via `--build-arg MRSID_SDK_PATH=<archive>` when building.
 
-The Docker image installs Python, GDAL and, optionally, the proprietary MrSID SDK.  Because the SDK cannot be redistributed, download the tarball separately and place it in this directory before building.
-
-Download the SDK from LizardTech and place the tarball in this directory (the filename used below matches the current release).
-
-### Without the SDK
-
-Build a basic image that only contains GDAL:
-
+## Building the image
 ```bash
-docker build -t arlcleaner .
+make build
+```
+The `IMAGE_NAME` variable may be overridden if you want a custom tag:
+```bash
+make build IMAGE_NAME=mytag
 ```
 
-### Including the MrSID SDK
+## Make targets
+The `Makefile` exposes a few convenience commands:
 
-Copy the SDK archive into the project root and pass its name via the `MRSID_SDK_PATH` build argument:
+- `make sid-test` – run `sidtest.py` inside the container to verify GDAL and MrSID support.
+- `make convert-one` – example rule that converts a single SID file using `decode_sid.sh` (edit the rule or the `SID_FILE` variable to point at your image).
+- `make convert-all` – convert every `.sid` in `SID_DIR` to GeoJPEG.
+- `make test-image` – execute `image_test.py` which converts all files from the folders defined in `config.py`.
 
-```bash
-cp /mnt/rawdata/pyarl/SID/MrSID_DSDK-9.5.4.4709-rhel6.x86-64.gcc531.tar.gz .
-docker build --build-arg MRSID_SDK_PATH=MrSID_DSDK-9.5.4.4709-rhel6.x86-64.gcc531.tar.gz -t arlcleaner .
-```
+The input and output folders used by `test-image` can be adjusted in `config.py` or overridden by passing variables `SID_IN`, `SID_OUT`, `TIFF_IN` and `TIFF_OUT` when invoking make.
 
-Alternatively, you can place the archive elsewhere and reference the relative path when building.
+## Configuration
+`config.py` defines runtime options such as JPEG quality, tile size for SID images, the number of parallel workers, and whether to enforce a geographic bounding‑box check.  Adjust these settings to match your dataset and hardware.
 
-## Running
-
-The container executes `sidtest.py` by default.  To run it:
-
-```bash
-docker run --rm arlcleaner
-```
-
-Alternatively, you can build the image and run the test via `make`:
-
-```bash
-make sid-test
-```
-
-The script reports the GDAL version and whether the MrSID SDK is available.
-
-### Converting SID files
-
-When the SDK is included, you can convert a `.sid` file to a GeoJPEG using the helper script:
-
-```bash
-docker run --rm -v /path/to/data:/data arlcleaner \
-    decode_sid.sh /data/input.sid
-```
-
-This produces `input.jpg` and `input.jgw` alongside the source file.
+---
+After building, run one of the make commands above to start converting imagery.
