@@ -53,3 +53,7 @@ docker run --rm -v /path/to/data:/data arlcleaner \
 ```
 
 This produces `input.jpg` and `input.jgw` alongside the source file.
+
+The Python helper ``process_sid`` also relies on the MrSID driver.  If
+``gdal_translate`` fails with "not recognized as a supported file format",
+verify that GDAL was built with the proprietary SDK as described above.
