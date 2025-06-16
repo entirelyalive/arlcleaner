@@ -99,6 +99,7 @@ def _guess_epsg_and_warp(src: str) -> Optional[str]:
     base = os.path.splitext(os.path.basename(src))[0]
     tmp_dir = tempfile.mkdtemp()
 
+
     for cand in candidates:
         tmp = os.path.join(tmp_dir, f"{base}_guess_{cand}.tif")
         try:
@@ -113,8 +114,9 @@ def _guess_epsg_and_warp(src: str) -> Optional[str]:
             os.remove(tmp)
         except FileNotFoundError:
             pass
-
+          
     shutil.rmtree(tmp_dir, ignore_errors=True)
+
     return None
 
 
@@ -183,6 +185,7 @@ def process_sid(path: str, output_dir: str) -> List[str]:
     try:
         if epsg is None:
             guess = _guess_epsg_and_warp(src)
+
             if guess:
                 src = guess
                 tmp_files.append(guess)
@@ -194,10 +197,14 @@ def process_sid(path: str, output_dir: str) -> List[str]:
             src = tmp
             tmp_files.append(tmp)
 
+
         info = _gdalinfo_json(src)
         bbox = _bbox_from_info(info)
         if not bbox or not _bbox_valid(bbox):
             raise RuntimeError("invalid bbox after warp")
+
+
+
 
         width, height = info.get("size", [0, 0])
         if not width or not height:
