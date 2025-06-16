@@ -35,6 +35,12 @@ The container executes `sidtest.py` by default.  To run it:
 docker run --rm arlcleaner
 ```
 
+Alternatively, you can build the image and run the test via `make`:
+
+```bash
+make sid-test
+```
+
 The script reports the GDAL version and whether the MrSID SDK is available.
 
 ### Converting SID files
