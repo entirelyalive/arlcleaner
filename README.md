@@ -1,10 +1,10 @@
 # arlcleaner
 
-Full AI gen MrSID and Tiff Processor
+Tools for converting MrSID and GeoTIFF imagery inside a container.
 
 ## Building the Docker image
 
-The repository includes a `Dockerfile` that installs Python 3 and GDAL.  The proprietary MrSID SDK can be added at build time when you have downloaded the archive separately.
+The Docker image installs Python, GDAL and, optionally, the proprietary MrSID SDK.  Because the SDK cannot be redistributed, download the tarball separately and place it in this directory before building.
 
 Download the SDK from LizardTech and place the tarball in this directory (the filename used below matches the current release).
 
@@ -36,3 +36,14 @@ docker run --rm arlcleaner
 ```
 
 The script reports the GDAL version and whether the MrSID SDK is available.
+
+### Converting SID files
+
+When the SDK is included, you can convert a `.sid` file to a GeoJPEG using the helper script:
+
+```bash
+docker run --rm -v /path/to/data:/data arlcleaner \
+    decode_sid.sh /data/input.sid
+```
+
+This produces `input.jpg` and `input.jgw` alongside the source file.
