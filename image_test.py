@@ -21,8 +21,9 @@ def main() -> None:
     for src in _iter_files(config.SID_INPUT, [".sid"]):
         print(f"Processing SID: {src}")
         try:
-            dst = process_sid(src, config.SID_OUTPUT)
-            print(f"  -> {dst}")
+            dst_files = process_sid(src, config.SID_OUTPUT)
+            for d in dst_files:
+                print(f"  -> {d}")
         except Exception as e:
             print(f"Failed to process {src}: {e}")
 
