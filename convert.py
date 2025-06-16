@@ -16,8 +16,9 @@ import config
 
 
 def _run(cmd: List[str]) -> subprocess.CompletedProcess:
-    """Run a subprocess command."""
-    return subprocess.run(cmd, check=True, text=True)
+    """Run a subprocess command quietly and return the CompletedProcess."""
+    return subprocess.run(cmd, check=True, text=True, stdout=subprocess.PIPE,
+                         stderr=subprocess.PIPE)
 
 
 def _gdalinfo_json(path: str) -> dict:
@@ -29,10 +30,10 @@ def _extract_epsg(info: dict) -> Optional[int]:
     cs = info.get("coordinateSystem", {}).get("wkt")
     if not cs:
         return None
-    m = re.search(r"EPSG['\"]?,['\"]?(\d+)", cs)
-    if m:
+    matches = re.findall(r"AUTHORITY\[\"EPSG\",\s*\"(\d+)\"\]", cs)
+    if matches:
         try:
-            return int(m.group(1))
+            return int(matches[-1])
         except ValueError:
             return None
     return None
@@ -77,14 +78,14 @@ def _move_to_failed(src: str) -> None:
     for name in os.listdir(directory):
         if name.startswith(base):
             try:
-                shutil.move(os.path.join(directory, name),
-                            os.path.join(config.FAILED_PROCESSING, name))
+                shutil.copy2(os.path.join(directory, name),
+                             os.path.join(config.FAILED_PROCESSING, name))
             except Exception:
                 pass
 
 
 def _warp_to_4269(src: str, dst: str, src_epsg: Optional[int] = None) -> None:
-    cmd = ["gdalwarp"]
+    cmd = ["gdalwarp", "-q"]
     if src_epsg:
         cmd.extend(["-s_srs", f"EPSG:{src_epsg}"])
     cmd.extend(["-t_srs", "EPSG:4269", src, dst])
@@ -98,8 +99,6 @@ def _guess_epsg_and_warp(src: str) -> Optional[str]:
 
     base = os.path.splitext(os.path.basename(src))[0]
     tmp_dir = tempfile.mkdtemp()
-
-
     for cand in candidates:
         tmp = os.path.join(tmp_dir, f"{base}_guess_{cand}.tif")
         try:
@@ -114,9 +113,7 @@ def _guess_epsg_and_warp(src: str) -> Optional[str]:
             os.remove(tmp)
         except FileNotFoundError:
             pass
-          
     shutil.rmtree(tmp_dir, ignore_errors=True)
-
     return None
 
 
@@ -170,6 +167,7 @@ def process_sid(path: str, output_dir: str) -> List[str]:
     if not path.lower().endswith(".sid"):
         raise ValueError(f"Expected a .sid file, got: {path}")
 
+
     base = os.path.splitext(os.path.basename(path))[0]
     try:
         info = _gdalinfo_json(path)
@@ -185,7 +183,6 @@ def process_sid(path: str, output_dir: str) -> List[str]:
     try:
         if epsg is None:
             guess = _guess_epsg_and_warp(src)
-
             if guess:
                 src = guess
                 tmp_files.append(guess)
@@ -196,15 +193,10 @@ def process_sid(path: str, output_dir: str) -> List[str]:
             _warp_to_4269(src, tmp, epsg)
             src = tmp
             tmp_files.append(tmp)
-
-
         info = _gdalinfo_json(src)
         bbox = _bbox_from_info(info)
         if not bbox or not _bbox_valid(bbox):
             raise RuntimeError("invalid bbox after warp")
-
-
-
 
         width, height = info.get("size", [0, 0])
         if not width or not height:
