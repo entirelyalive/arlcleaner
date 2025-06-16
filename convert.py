@@ -5,6 +5,7 @@ from __future__ import annotations
 import os
 import shutil
 import subprocess
+import tempfile
 from typing import Optional, List
 
 import json
@@ -90,10 +91,15 @@ def _warp_to_4269(src: str, dst: str, src_epsg: Optional[int] = None) -> None:
     _run(cmd)
 
 
-def _guess_epsg_and_warp(src: str, tmp_dir: str) -> Optional[str]:
+def _guess_epsg_and_warp(src: str) -> Optional[str]:
     """Try a set of common EPSG codes and return warped filename if valid."""
-    candidates = [4269, 4326, 3857] + [326 + z for z in range(10, 20)]
+    # Common projections plus a range of UTM zones (WGS84 datum)
+    candidates = [4269, 4326, 3857] + [32600 + z for z in range(10, 20)]
+
     base = os.path.splitext(os.path.basename(src))[0]
+    tmp_dir = tempfile.mkdtemp()
+
+
     for cand in candidates:
         tmp = os.path.join(tmp_dir, f"{base}_guess_{cand}.tif")
         try:
@@ -108,6 +114,9 @@ def _guess_epsg_and_warp(src: str, tmp_dir: str) -> Optional[str]:
             os.remove(tmp)
         except FileNotFoundError:
             pass
+          
+    shutil.rmtree(tmp_dir, ignore_errors=True)
+
     return None
 
 
@@ -175,7 +184,8 @@ def process_sid(path: str, output_dir: str) -> List[str]:
 
     try:
         if epsg is None:
-            guess = _guess_epsg_and_warp(src, output_dir)
+            guess = _guess_epsg_and_warp(src)
+
             if guess:
                 src = guess
                 tmp_files.append(guess)
@@ -187,10 +197,14 @@ def process_sid(path: str, output_dir: str) -> List[str]:
             src = tmp
             tmp_files.append(tmp)
 
+
         info = _gdalinfo_json(src)
         bbox = _bbox_from_info(info)
         if not bbox or not _bbox_valid(bbox):
             raise RuntimeError("invalid bbox after warp")
+
+
+
 
         width, height = info.get("size", [0, 0])
         if not width or not height:
@@ -259,7 +273,7 @@ def process_tiff(path: str, output_dir: str) -> Optional[str]:
 
     try:
         if epsg is None:
-            guess = _guess_epsg_and_warp(src, output_dir)
+            guess = _guess_epsg_and_warp(src)
             if guess:
                 src = guess
                 tmp_files.append(guess)
