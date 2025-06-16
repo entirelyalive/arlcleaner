@@ -16,8 +16,9 @@ import config
 
 
 def _run(cmd: List[str]) -> subprocess.CompletedProcess:
-    """Run a subprocess command."""
-    return subprocess.run(cmd, check=True, text=True)
+    """Run a subprocess command quietly and return the CompletedProcess."""
+    return subprocess.run(cmd, check=True, text=True, stdout=subprocess.PIPE,
+                         stderr=subprocess.PIPE)
 
 
 def _gdalinfo_json(path: str) -> dict:
@@ -29,10 +30,10 @@ def _extract_epsg(info: dict) -> Optional[int]:
     cs = info.get("coordinateSystem", {}).get("wkt")
     if not cs:
         return None
-    m = re.search(r"EPSG['\"]?,['\"]?(\d+)", cs)
-    if m:
+    matches = re.findall(r"AUTHORITY\[\"EPSG\",\s*\"(\d+)\"\]", cs)
+    if matches:
         try:
-            return int(m.group(1))
+            return int(matches[-1])
         except ValueError:
             return None
     return None
@@ -77,14 +78,14 @@ def _move_to_failed(src: str) -> None:
     for name in os.listdir(directory):
         if name.startswith(base):
             try:
-                shutil.move(os.path.join(directory, name),
-                            os.path.join(config.FAILED_PROCESSING, name))
+                shutil.copy2(os.path.join(directory, name),
+                             os.path.join(config.FAILED_PROCESSING, name))
             except Exception:
                 pass
 
 
 def _warp_to_4269(src: str, dst: str, src_epsg: Optional[int] = None) -> None:
-    cmd = ["gdalwarp"]
+    cmd = ["gdalwarp", "-q"]
     if src_epsg:
         cmd.extend(["-s_srs", f"EPSG:{src_epsg}"])
     cmd.extend(["-t_srs", "EPSG:4269", src, dst])
