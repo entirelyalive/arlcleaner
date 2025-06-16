@@ -49,10 +49,34 @@ def _convert_to_jpeg(src: str, dst_dir: str) -> str:
     return dst
 
 
+def _has_mrsid_support() -> bool:
+    """Return ``True`` if GDAL has the MrSID driver available."""
+    if not shutil.which("gdalinfo"):
+        return False
+    try:
+        formats = subprocess.check_output(
+            ["gdalinfo", "--formats"], text=True, stderr=subprocess.STDOUT
+        )
+    except subprocess.CalledProcessError:
+        return False
+    return "MrSID" in formats
+
+
 def process_sid(path: str, output_dir: str) -> str:
-    """Process a MrSID image and convert it to GeoJPEG."""
+    """Process a MrSID image and convert it to GeoJPEG.
+
+    Raises
+    ------
+    RuntimeError
+        If the running GDAL installation lacks MrSID support.
+    """
     if not path.lower().endswith(".sid"):
         raise ValueError(f"Expected a .sid file, got: {path}")
+    if not _has_mrsid_support():
+        raise RuntimeError(
+            "GDAL does not have MrSID support. Install the MrSID SDK or use a"
+            " build that includes the driver."
+        )
     return _convert_to_jpeg(path, output_dir)
 
 

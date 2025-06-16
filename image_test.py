@@ -26,14 +26,14 @@ def main() -> None:
         except Exception as e:
             print(f"Failed to process {src}: {e}")
 
-    # Process GeoTIFF files
-    for src in _iter_files(config.TIFF_INPUT, [".tif", ".tiff"]):
-        print(f"Processing TIFF: {src}")
-        try:
-            dst = process_tiff(src, config.TIFF_OUTPUT)
-            print(f"  -> {dst}")
-        except Exception as e:
-            print(f"Failed to process {src}: {e}")
+    # Process GeoTIFF files (disabled)
+    # for src in _iter_files(config.TIFF_INPUT, [".tif", ".tiff"]):
+    #     print(f"Processing TIFF: {src}")
+    #     try:
+    #         dst = process_tiff(src, config.TIFF_OUTPUT)
+    #         print(f"  -> {dst}")
+    #     except Exception as e:
+    #         print(f"Failed to process {src}: {e}")
 
 
 if __name__ == "__main__":
