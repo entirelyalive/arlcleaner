@@ -56,6 +56,8 @@ def _bbox_from_info(info: dict) -> Optional[tuple]:
 
 
 def _bbox_valid(bbox: tuple) -> bool:
+    if not getattr(config, "BBOX_CHECK", True):
+        return True
     minx, miny, maxx, maxy = bbox
     if minx < -170 or maxx > -50 or miny < 15 or maxy > 75:
         return False
@@ -69,6 +71,7 @@ def _log_error(base: str, message: str) -> None:
     log_path = os.path.join(config.ERROR_LOGS, base + ".log")
     with open(log_path, "a", encoding="utf-8") as fh:
         fh.write(message + "\n")
+    print(f"[ERROR] {base}: {message} (logged to {log_path})")
 
 
 def _move_to_failed(src: str) -> None:
@@ -80,6 +83,7 @@ def _move_to_failed(src: str) -> None:
             try:
                 shutil.copy2(os.path.join(directory, name),
                              os.path.join(config.FAILED_PROCESSING, name))
+                print(f"[FAILED] Copied {name} to {config.FAILED_PROCESSING}")
             except Exception:
                 pass
 
@@ -187,7 +191,7 @@ def process_sid(path: str, output_dir: str) -> List[str]:
                 src = guess
                 tmp_files.append(guess)
             else:
-                raise RuntimeError("could not determine EPSG")
+                raise RuntimeError("could not determine EPSG for SID")
         elif epsg != 4269:
             tmp = os.path.join(output_dir, base + "_warp.tif")
             _warp_to_4269(src, tmp, epsg)
@@ -196,7 +200,7 @@ def process_sid(path: str, output_dir: str) -> List[str]:
         info = _gdalinfo_json(src)
         bbox = _bbox_from_info(info)
         if not bbox or not _bbox_valid(bbox):
-            raise RuntimeError("invalid bbox after warp")
+            raise RuntimeError(f"invalid bbox after warp: {bbox}")
 
         width, height = info.get("size", [0, 0])
         if not width or not height:
@@ -270,7 +274,7 @@ def process_tiff(path: str, output_dir: str) -> Optional[str]:
                 src = guess
                 tmp_files.append(guess)
             else:
-                raise RuntimeError("could not determine EPSG")
+                raise RuntimeError("could not determine EPSG for TIFF")
         elif epsg != 4269:
             tmp = os.path.join(output_dir, base + "_warp.tif")
             _warp_to_4269(src, tmp, epsg)
@@ -280,7 +284,7 @@ def process_tiff(path: str, output_dir: str) -> Optional[str]:
         info = _gdalinfo_json(src)
         bbox = _bbox_from_info(info)
         if not bbox or not _bbox_valid(bbox):
-            raise RuntimeError("invalid bbox after warp")
+            raise RuntimeError(f"invalid bbox after warp: {bbox}")
 
         dst = _convert_to_jpeg(src, output_dir, dst_name=base)
         return dst

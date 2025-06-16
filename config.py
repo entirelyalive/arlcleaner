@@ -20,3 +20,9 @@ JPEG_QUALITY = 90
 # Pixel dimensions for SID tiling
 SID_TILE_WIDTH = 5000
 SID_TILE_HEIGHT = 5000
+
+# Enable geographic bounding-box validation when True
+BBOX_CHECK = True
+
+# Number of parallel workers to use for conversions
+MAX_WORKERS = 4
