@@ -1,27 +1,33 @@
-FROM python:3.10-slim
+FROM ubuntu:24.04
 
+# Optional path to a locally available MrSID SDK archive
 ARG MRSID_SDK_PATH=mrsid_sdk_placeholder.tar.gz
 
-# Install GDAL
-RUN apt-get update \ 
-    && apt-get install -y gdal-bin libgdal-dev \ 
+# Install Python and GDAL for the follow-up conversion step
+RUN apt-get update -qq \
+    && apt-get install -y --no-install-recommends \
+        python3 python3-pip gdal-bin ca-certificates \
     && rm -rf /var/lib/apt/lists/*
 
-# Copy test script
-WORKDIR /app
-COPY sidtest.py /app/sidtest.py
-
-# Optionally install MrSID SDK
+# Install the MrSID SDK when the archive is provided
+WORKDIR /opt
 COPY ${MRSID_SDK_PATH} /tmp/mrsid_sdk.tar.gz
 RUN if [ -s /tmp/mrsid_sdk.tar.gz ]; then \
-        mkdir -p /opt/mrsid && \
-        tar -xzf /tmp/mrsid_sdk.tar.gz -C /opt/mrsid --strip-components=1 && \
-        rm /tmp/mrsid_sdk.tar.gz && \
-        echo "MrSID SDK installed"; \
+        tar xf /tmp/mrsid_sdk.tar.gz && \
+        cp -r Geo_DSDK*/* /usr/local/ && \
+        ldconfig && \
+        rm -rf Geo_DSDK* /tmp/mrsid_sdk.tar.gz; \
     else \
         echo "MrSID SDK not provided" && rm /tmp/mrsid_sdk.tar.gz; \
     fi
 
-ENV PATH="/opt/mrsid/bin:${PATH}"
+ENV PATH="/usr/local/bin:${PATH}" \
+    LD_LIBRARY_PATH="/usr/local/lib"
 
-ENTRYPOINT ["python", "/app/sidtest.py"]
+# Add the test and helper scripts
+WORKDIR /app
+COPY sidtest.py /app/sidtest.py
+COPY decode_sid.sh /usr/local/bin/decode_sid.sh
+RUN chmod +x /usr/local/bin/decode_sid.sh
+
+ENTRYPOINT ["python3", "/app/sidtest.py"]
