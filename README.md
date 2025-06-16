@@ -41,6 +41,13 @@ Alternatively, you can build the image and run the test via `make`:
 make sid-test
 ```
 
+The Makefile uses `sudo` when invoking Docker. If your setup does not
+require sudo, run:
+
+```bash
+make SUDO= sid-test
+```
+
 The script reports the GDAL version and whether the MrSID SDK is available.
 
 ### Converting SID files
