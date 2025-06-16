@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
-# Simple wrapper to convert a MrSID file to GeoJPEG inside the container.
-# Usage: decode_sid.sh /path/to/input.sid
+# Convert a MrSID file to GeoJPEG (+ world-file) using GDAL alone.
+# Usage:  decode_sid.sh  /absolute/or/relative/path/to/file.sid
+set -e
 
 sid=$1
 if [ -z "$sid" ]; then
@@ -8,12 +9,14 @@ if [ -z "$sid" ]; then
     exit 1
 fi
 
-jpg="${sid%.sid}.jpg"
+base="${sid%.sid}"
+jpg="${base}.jpg"
 
-mrsidgeodecode -i "$sid" -o temp.tif -of tifg -wf
+echo "Converting $sid → $jpg …"
+gdal_translate "$sid" "$jpg" \
+    -of JPEG \
+    -co QUALITY=90 \
+    -co WORLDFILE=YES \
+    -co TILED=YES
 
-gdal_translate temp.tif "$jpg" -of JPEG -co WORLDFILE=YES -co QUALITY=90 -co TILED=YES
-
-rm temp.tif
-
-echo "Finished -> $jpg (+ .jgw)"
+echo "✓  Finished  ($jpg + $(basename "$jpg" .jpg).jgw)"
