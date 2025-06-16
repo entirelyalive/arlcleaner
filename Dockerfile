@@ -13,10 +13,9 @@ RUN apt-get update -qq \
 WORKDIR /opt
 COPY ${MRSID_SDK_PATH} /tmp/mrsid_sdk.tar.gz
 RUN if [ -s /tmp/mrsid_sdk.tar.gz ]; then \
-        tar xf /tmp/mrsid_sdk.tar.gz && \
-        cp -r Geo_DSDK*/* /usr/local/ && \
-        ldconfig && \
-        rm -rf Geo_DSDK* /tmp/mrsid_sdk.tar.gz; \
+        tar xf /tmp/mrsid_sdk.tar.gz -C /usr/local --strip-components=1 \
+        && ldconfig \
+        && rm /tmp/mrsid_sdk.tar.gz; \
     else \
         echo "MrSID SDK not provided" && rm /tmp/mrsid_sdk.tar.gz; \
     fi
