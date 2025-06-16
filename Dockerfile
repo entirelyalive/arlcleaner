@@ -1,7 +1,7 @@
 FROM ubuntu:24.04
 
 # Optional path to a locally available MrSID SDK archive
-ARG MRSID_SDK_PATH=mrsid_sdk_placeholder.tar.gz
+ARG MRSID_SDK_PATH=mrsid_sdk.tar.gz
 
 # Install Python and GDAL for the follow-up conversion step
 RUN apt-get update -qq \

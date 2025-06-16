@@ -2,3 +2,7 @@
 MrSID_DSDK*.tar.gz
 # Keep placeholder
 !mrsid_sdk_placeholder.tar.gz
+
+mrsid_sdk.tar.gz
+
+venv/

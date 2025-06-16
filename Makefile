@@ -1,5 +1,5 @@
 IMAGE_NAME ?= arlcleaner
-MRSID_SDK_PATH ?= mrsid_sdk_placeholder.tar.gz
+MRSID_SDK_PATH ?= mrsid_sd.tar.gz
 
 .PHONY: build
 build:
