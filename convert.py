@@ -11,6 +11,11 @@ from typing import Optional, List
 import json
 import math
 import re
+import xml.etree.ElementTree as ET
+try:
+    from osgeo import gdal
+except Exception:  # pragma: no cover - optional dependency
+    gdal = None
 
 import config
 
@@ -26,16 +31,48 @@ def _gdalinfo_json(path: str) -> dict:
     return json.loads(out)
 
 
-def _extract_epsg(info: dict) -> Optional[int]:
-    cs = info.get("coordinateSystem", {}).get("wkt")
-    if not cs:
-        return None
-    matches = re.findall(r"AUTHORITY\[\"EPSG\",\s*\"(\d+)\"\]", cs)
-    if matches:
+def _extract_epsg_from_aux(path: str) -> Optional[int]:
+    """Attempt to parse an EPSG code from a ``.aux.xml`` sidecar file."""
+    candidates = [path + ".aux.xml", os.path.splitext(path)[0] + ".aux.xml"]
+    for aux in candidates:
         try:
-            return int(matches[-1])
+            tree = ET.parse(aux)
+            root = tree.getroot()
+            text = ET.tostring(root, encoding="unicode")
+            m = re.search(r"EPSG[:\"]?(\d+)", text)
+            if m:
+                return int(m.group(1))
+        except FileNotFoundError:
+            continue
+        except Exception:
+            continue
+    return None
+
+
+def _extract_epsg(info: dict, path: Optional[str] = None) -> Optional[int]:
+    cs_info = info.get("coordinateSystem", {})
+    epsg_field = cs_info.get("epsg")
+    if epsg_field:
+        try:
+            return int(epsg_field)
         except ValueError:
-            return None
+            pass
+    cs = cs_info.get("wkt")
+    if cs:
+        matches = re.findall(r"AUTHORITY\[\"EPSG\",\s*\"(\d+)\"\]", cs)
+        if matches:
+            try:
+                return int(matches[-1])
+            except ValueError:
+                pass
+        m = re.search(r"EPSG:(\d+)", cs)
+        if m:
+            try:
+                return int(m.group(1))
+            except ValueError:
+                pass
+    if path:
+        return _extract_epsg_from_aux(path)
     return None
 
 
@@ -180,18 +217,18 @@ def process_sid(path: str, output_dir: str) -> List[str]:
         _move_to_failed(path)
         return []
 
-    epsg = _extract_epsg(info)
+    epsg = _extract_epsg(info, path)
     src = path
     tmp_files = []
 
     try:
         if epsg is None:
-            guess = _guess_epsg_and_warp(src)
-            if guess:
-                src = guess
-                tmp_files.append(guess)
-            else:
+            dst = _convert_to_jpeg(src, output_dir, dst_name=base, quality=60)
+            info = _gdalinfo_json(dst)
+            bbox = _bbox_from_info(info)
+            if not bbox or not _bbox_valid(bbox):
                 raise RuntimeError("could not determine EPSG for SID")
+            return [dst]
         elif epsg != 4269:
             tmp = os.path.join(output_dir, base + "_warp.tif")
             _warp_to_4269(src, tmp, epsg)
@@ -224,7 +261,7 @@ def process_sid(path: str, output_dir: str) -> List[str]:
                     "-of",
                     "JPEG",
                     "-co",
-                    f"QUALITY={config.JPEG_QUALITY}",
+                    f"QUALITY={60}",
                     "-co",
                     "WORLDFILE=YES",
                     "-co",
@@ -250,52 +287,125 @@ def process_sid(path: str, output_dir: str) -> List[str]:
                 pass
 
 
+def _primary_process(file_path: str, output_dir: str) -> Optional[dict]:
+    """Simple reproject-and-convert workflow for GeoTIFFs."""
+    if gdal is None:
+        raise RuntimeError("GDAL Python bindings are required for TIFF processing")
+    base = os.path.splitext(os.path.basename(file_path))[0]
+    dataset = gdal.Open(file_path)
+    if not dataset:
+        print(f"Failed to open {file_path}")
+        return None
+
+    dest_path = os.path.join(output_dir, base + "_4269.tif")
+    gdal.Warp(dest_path, dataset, dstSRS="EPSG:4269")
+
+    reprojected_dataset = gdal.Open(dest_path)
+    jpg_path = os.path.join(output_dir, base + ".jpg")
+    gdal.Translate(
+        jpg_path,
+        reprojected_dataset,
+        format="JPEG",
+        creationOptions=["WORLDFILE=YES", "QUALITY=80"],
+    )
+    reprojected_dataset = None
+    dataset = None
+    os.remove(dest_path)
+    return {"jpg_path": jpg_path, "aux_xml_path": jpg_path + ".aux.xml"}
+
+
+def _secondary_process(file_path: str, output_dir: str) -> Optional[dict]:
+    """More expensive fallback workflow for troublesome GeoTIFFs."""
+    if gdal is None:
+        raise RuntimeError("GDAL Python bindings are required for TIFF processing")
+    base = os.path.splitext(os.path.basename(file_path))[0]
+    tif_path = file_path
+    aux_path = tif_path + ".aux.xml"
+    corrected_tif = os.path.join(output_dir, f"{base}_corrected.tif")
+    reprojected_tif = os.path.join(output_dir, f"{base}_EPSG4269.tif")
+    geo_jpg = os.path.join(output_dir, f"{base}_EPSG4269.jpg")
+
+    spatial_ref = None
+    gcp_list = []
+
+    if os.path.exists(aux_path):
+        try:
+            tree = ET.parse(aux_path)
+            root = tree.getroot()
+            for element in root.iter():
+                if element.tag == "WKT":
+                    spatial_ref = element.text
+                elif element.tag == "SourceGCPs":
+                    gcp_elements = root.findall("SourceGCPs/Double")
+                    if gcp_elements:
+                        gcp_list = [tuple(map(float, el.text.split())) for el in gcp_elements]
+        except Exception as e:
+            print(f"Error parsing .aux.xml for {file_path}: {e}")
+
+    if not spatial_ref:
+        dataset = gdal.Open(tif_path)
+        if dataset:
+            crs_wkt = dataset.GetProjection()
+            if crs_wkt:
+                spatial_ref = crs_wkt
+        else:
+            print(f"Could not open dataset for {file_path}.")
+
+    if not spatial_ref:
+        tfwx_path = tif_path.replace(".tif", ".tfwx")
+        if os.path.exists(tfwx_path):
+            print(f"Inferred CRS from TFWX for {file_path}. Assigning EPSG:4326.")
+            spatial_ref = "EPSG:4326"
+
+    if not spatial_ref:
+        print(f"No spatial reference found for {file_path}.")
+        return None
+
+    if gcp_list:
+        vrt_path = tif_path + ".vrt"
+        gdal.Translate(vrt_path, tif_path, GCPs=gcp_list, outputSRS=spatial_ref)
+        gdal.Warp(corrected_tif, vrt_path, dstSRS="EPSG:4269")
+        os.remove(vrt_path)
+    else:
+        gdal.Translate(corrected_tif, tif_path, outputSRS=spatial_ref)
+
+    gdal.Warp(reprojected_tif, corrected_tif, dstSRS="EPSG:4269")
+
+    gdal.Translate(
+        geo_jpg,
+        reprojected_tif,
+        format="JPEG",
+        creationOptions=["WORLDFILE=YES", "QUALITY=80"],
+    )
+
+    os.remove(corrected_tif)
+    os.remove(reprojected_tif)
+
+    return {"jpg_path": geo_jpg, "aux_xml_path": geo_jpg + ".aux.xml"}
+
+
 def process_tiff(path: str, output_dir: str) -> Optional[str]:
-    """Process a GeoTIFF image and convert it to GeoJPEG."""
+    """Process a GeoTIFF using primary and secondary pipelines."""
     if not (path.lower().endswith(".tif") or path.lower().endswith(".tiff")):
         raise ValueError(f"Expected a .tif/.tiff file, got: {path}")
 
     base = os.path.splitext(os.path.basename(path))[0]
-    try:
-        info = _gdalinfo_json(path)
-    except Exception as exc:
-        _log_error(base, f"gdalinfo failed: {exc}")
-        _move_to_failed(path)
-        return None
 
-    epsg = _extract_epsg(info)
-    src = path
-    tmp_files = []
-
-    try:
-        if epsg is None:
-            guess = _guess_epsg_and_warp(src)
-            if guess:
-                src = guess
-                tmp_files.append(guess)
-            else:
-                raise RuntimeError("could not determine EPSG for TIFF")
-        elif epsg != 4269:
-            tmp = os.path.join(output_dir, base + "_warp.tif")
-            _warp_to_4269(src, tmp, epsg)
-            src = tmp
-            tmp_files.append(tmp)
-
-        info = _gdalinfo_json(src)
+    res = _primary_process(path, output_dir)
+    if res:
+        info = _gdalinfo_json(res["jpg_path"])
         bbox = _bbox_from_info(info)
-        if not bbox or not _bbox_valid(bbox):
-            raise RuntimeError(f"invalid bbox after warp: {bbox}")
+        if bbox and _bbox_valid(bbox):
+            return res["jpg_path"]
 
-        dst = _convert_to_jpeg(src, output_dir, dst_name=base)
-        return dst
-    except Exception as exc:
-        _log_error(base, str(exc))
-        _move_to_failed(path)
-        return None
-    finally:
-        for f in tmp_files:
-            try:
-                os.remove(f)
-            except FileNotFoundError:
-                pass
+    res = _secondary_process(path, output_dir)
+    if res:
+        info = _gdalinfo_json(res["jpg_path"])
+        bbox = _bbox_from_info(info)
+        if bbox and _bbox_valid(bbox):
+            return res["jpg_path"]
+
+    _log_error(base, "TIFF processing failed")
+    _move_to_failed(path)
+    return None
 
