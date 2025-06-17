@@ -11,6 +11,7 @@ from typing import Optional, List
 import json
 import math
 import re
+import xml.etree.ElementTree as ET
 
 import config
 
@@ -26,16 +27,48 @@ def _gdalinfo_json(path: str) -> dict:
     return json.loads(out)
 
 
-def _extract_epsg(info: dict) -> Optional[int]:
-    cs = info.get("coordinateSystem", {}).get("wkt")
-    if not cs:
-        return None
-    matches = re.findall(r"AUTHORITY\[\"EPSG\",\s*\"(\d+)\"\]", cs)
-    if matches:
+def _extract_epsg_from_aux(path: str) -> Optional[int]:
+    """Attempt to parse an EPSG code from a ``.aux.xml`` sidecar file."""
+    candidates = [path + ".aux.xml", os.path.splitext(path)[0] + ".aux.xml"]
+    for aux in candidates:
         try:
-            return int(matches[-1])
+            tree = ET.parse(aux)
+            root = tree.getroot()
+            text = ET.tostring(root, encoding="unicode")
+            m = re.search(r"EPSG[:\"]?(\d+)", text)
+            if m:
+                return int(m.group(1))
+        except FileNotFoundError:
+            continue
+        except Exception:
+            continue
+    return None
+
+
+def _extract_epsg(info: dict, path: Optional[str] = None) -> Optional[int]:
+    cs_info = info.get("coordinateSystem", {})
+    epsg_field = cs_info.get("epsg")
+    if epsg_field:
+        try:
+            return int(epsg_field)
         except ValueError:
-            return None
+            pass
+    cs = cs_info.get("wkt")
+    if cs:
+        matches = re.findall(r"AUTHORITY\[\"EPSG\",\s*\"(\d+)\"\]", cs)
+        if matches:
+            try:
+                return int(matches[-1])
+            except ValueError:
+                pass
+        m = re.search(r"EPSG:(\d+)", cs)
+        if m:
+            try:
+                return int(m.group(1))
+            except ValueError:
+                pass
+    if path:
+        return _extract_epsg_from_aux(path)
     return None
 
 
@@ -180,7 +213,7 @@ def process_sid(path: str, output_dir: str) -> List[str]:
         _move_to_failed(path)
         return []
 
-    epsg = _extract_epsg(info)
+    epsg = _extract_epsg(info, path)
     src = path
     tmp_files = []
 
@@ -191,7 +224,12 @@ def process_sid(path: str, output_dir: str) -> List[str]:
                 src = guess
                 tmp_files.append(guess)
             else:
-                raise RuntimeError("could not determine EPSG for SID")
+                dst = _convert_to_jpeg(src, output_dir, dst_name=base)
+                info = _gdalinfo_json(dst)
+                bbox = _bbox_from_info(info)
+                if not bbox or not _bbox_valid(bbox):
+                    raise RuntimeError("could not determine EPSG for SID")
+                return [dst]
         elif epsg != 4269:
             tmp = os.path.join(output_dir, base + "_warp.tif")
             _warp_to_4269(src, tmp, epsg)
@@ -263,7 +301,7 @@ def process_tiff(path: str, output_dir: str) -> Optional[str]:
         _move_to_failed(path)
         return None
 
-    epsg = _extract_epsg(info)
+    epsg = _extract_epsg(info, path)
     src = path
     tmp_files = []
 
@@ -274,7 +312,13 @@ def process_tiff(path: str, output_dir: str) -> Optional[str]:
                 src = guess
                 tmp_files.append(guess)
             else:
-                raise RuntimeError("could not determine EPSG for TIFF")
+                # attempt conversion without reprojection
+                dst = _convert_to_jpeg(src, output_dir, dst_name=base)
+                info = _gdalinfo_json(dst)
+                bbox = _bbox_from_info(info)
+                if not bbox or not _bbox_valid(bbox):
+                    raise RuntimeError("could not determine EPSG for TIFF")
+                return dst
         elif epsg != 4269:
             tmp = os.path.join(output_dir, base + "_warp.tif")
             _warp_to_4269(src, tmp, epsg)
