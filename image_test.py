@@ -19,12 +19,12 @@ def _iter_files(folder: str, extensions: Iterable[str]):
 
 def _process_sid(src: str) -> None:
     print(f"Processing SID: {src}")
-    try:
-        dst_files = process_sid(src, config.SID_OUTPUT)
-        for d in dst_files:
-            print(f"  -> {d}")
-    except Exception as e:
-        print(f"Failed to process {src}: {e}")
+    #try:
+    #    dst_files = process_sid(src, config.SID_OUTPUT)
+    #    for d in dst_files:
+    #        print(f"  -> {d}")
+    #except Exception as e:
+    #    print(f"Failed to process {src}: {e}")
 
 
 def _process_tiff(src: str) -> None:

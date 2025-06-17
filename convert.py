@@ -7,17 +7,37 @@ import shutil
 import subprocess
 import tempfile
 from typing import Optional, List
+from pathlib import Path
 
 import json
 import math
 import re
 import xml.etree.ElementTree as ET
-try:
-    from osgeo import gdal
-except Exception:  # pragma: no cover - optional dependency
-    gdal = None
+from osgeo import gdal, osr
+#try:
+#    from osgeo import gdal, osr
+#except Exception:  # pragma: no cover - optional dependency
+#    gdal = None
 
 import config
+
+
+def _ensure_worldfile(tif_path: str) -> None:
+    """
+    If *tif_path* is 'xxx.tif' and a 'xxx.tfwx' file exists while no
+    'xxx.tfw' (or '.tifw') does, copy it so that GDAL can read the
+    geotransform.  Silently returns if nothing has to be done.
+    """
+    stem = Path(tif_path).with_suffix("")          # 'xxx'
+    tfwx = stem.with_suffix(".tfwx")               # xxx.tfwx
+    tfw  = stem.with_suffix(".tfw")                # xxx.tfw
+
+    if tfwx.exists() and not tfw.exists():
+        try:
+            shutil.copy2(tfwx, tfw)
+            print(f"[INFO] Copied {tfwx.name} → {tfw.name} so GDAL sees the world-file.")
+        except Exception as exc:                   # pragma: no cover
+            print(f"[WARN] Could not copy {tfwx} to {tfw}: {exc}")
 
 
 def _run(cmd: List[str]) -> subprocess.CompletedProcess:
@@ -48,8 +68,23 @@ def _extract_epsg_from_aux(path: str) -> Optional[int]:
             continue
     return None
 
+def _extract_epsg(info: Dict, path: Optional[str] = None) -> Optional[int]:
+    """
+    Best-effort extraction of an EPSG code.
 
-def _extract_epsg(info: dict, path: Optional[str] = None) -> Optional[int]:
+    Parameters
+    ----------
+    info : dict
+        GDAL-info JSON dictionary for the dataset (may be empty).
+    path : str, optional
+        Path to the raster on disk.  Enables GDAL probing and side-car scans.
+
+    Returns
+    -------
+    int | None
+        The recognised EPSG code, or ``None`` if it cannot be determined.
+    """
+    # --- 1. whatever came back from gdalinfo --json -------------------------
     cs_info = info.get("coordinateSystem", {})
     epsg_field = cs_info.get("epsg")
     if epsg_field:
@@ -57,24 +92,65 @@ def _extract_epsg(info: dict, path: Optional[str] = None) -> Optional[int]:
             return int(epsg_field)
         except ValueError:
             pass
-    cs = cs_info.get("wkt")
-    if cs:
-        matches = re.findall(r"AUTHORITY\[\"EPSG\",\s*\"(\d+)\"\]", cs)
-        if matches:
-            try:
-                return int(matches[-1])
-            except ValueError:
-                pass
-        m = re.search(r"EPSG:(\d+)", cs)
-        if m:
-            try:
-                return int(m.group(1))
-            except ValueError:
-                pass
-    if path:
-        return _extract_epsg_from_aux(path)
-    return None
 
+    wkt = cs_info.get("wkt")
+    if wkt:
+        m = re.search(r'AUTHORITY\["EPSG",\s*"(\d+)"\]', wkt) or \
+            re.search(r"EPSG:(\d+)", wkt)
+        if m:
+            return int(m.group(1))
+
+    # --- 2. open the raster directly with GDAL ------------------------------
+    if path:
+        try:
+            ds = gdal.Open(path, gdal.GA_ReadOnly)
+            if ds:
+                srs = osr.SpatialReference()
+                srs.ImportFromWkt(ds.GetProjection())  # empty string → no error
+                code = srs.GetAuthorityCode(None)
+                if not code:
+                    srs.AutoIdentifyEPSG()             # asks GDAL’s heuristics
+                    code = srs.GetAuthorityCode(None)
+                if code:
+                    return int(code)
+        except Exception:
+            pass
+
+    # --- 3. look for ArcGIS or ESRI side-cars -------------------------------
+    if path:
+        stem, _ = os.path.splitext(path)
+
+        for xml_path in (stem + ".aux.xml", stem + ".prj", path):
+            if not os.path.exists(xml_path):
+                continue
+            try:
+                tree = ET.parse(xml_path)
+                root = tree.getroot()
+
+                # (a) dedicated <WKID> or <LatestWKID> tags
+                for tag in ("WKID", "LatestWKID"):
+                    elem = root.find(f".//{{*}}{tag}")
+                    if elem is not None and elem.text and elem.text.isdigit():
+                        return int(elem.text)
+
+                # (b) EPSG authority embedded in WKT text
+                wkt_elem = root.find(".//{*}WKT")
+                if wkt_elem is not None and wkt_elem.text:
+                    m = re.search(r'AUTHORITY\["EPSG",\s*"(\d+)"\]', wkt_elem.text)
+                    if m:
+                        return int(m.group(1))
+            except ET.ParseError:
+                # *.prj* files are plain text  treat the whole file as WKT
+                with open(xml_path, "r", encoding="utf-8", errors="ignore") as fh:
+                    content = fh.read()
+                m = re.search(r'AUTHORITY\["EPSG",\s*"(\d+)"\]', content) or \
+                    re.search(r"EPSG:(\d+)", content)
+                if m:
+                    return int(m.group(1))
+            except Exception:
+                pass
+
+    return None
 
 def _bbox_from_info(info: dict) -> Optional[tuple]:
     corners = info.get("cornerCoordinates")
@@ -218,6 +294,7 @@ def process_sid(path: str, output_dir: str) -> List[str]:
         return []
 
     epsg = _extract_epsg(info, path)
+    
     src = path
     tmp_files = []
 
@@ -287,31 +364,76 @@ def process_sid(path: str, output_dir: str) -> List[str]:
                 pass
 
 
-def _primary_process(file_path: str, output_dir: str) -> Optional[dict]:
-    """Simple reproject-and-convert workflow for GeoTIFFs."""
+def _print_epsg_bbox(label: str, path: str) -> None:
+    """Dump EPSG and corner‐bbox to the console."""
+    info = gdal.Info(path, format="json")
+    # Try JSON coordinateSystem.epsg first
+    cs = info.get("coordinateSystem", {}) or {}
+    epsg = cs.get("epsg", None)
+    try:
+        epsg = int(epsg)
+    except Exception:
+        epsg = None
+    bbox = _bbox_from_info(info)
+    print(f"[DEBUG] {label}: {path}")
+    print(f"        → EPSG={epsg!r}, bbox={bbox!r}")
+
+def _primary_process(file_path: str, output_dir: str) -> Optional[Dict]:
     if gdal is None:
-        raise RuntimeError("GDAL Python bindings are required for TIFF processing")
+        raise RuntimeError("GDAL Python bindings are required")
+
+    _ensure_worldfile(file_path)
+
     base = os.path.splitext(os.path.basename(file_path))[0]
-    dataset = gdal.Open(file_path)
-    if not dataset:
-        print(f"Failed to open {file_path}")
-        return None
 
-    dest_path = os.path.join(output_dir, base + "_4269.tif")
-    gdal.Warp(dest_path, dataset, dstSRS="EPSG:4269")
+    # 1) debug print on the input TIFF
+    _print_epsg_bbox("Input TIFF", file_path)
 
-    reprojected_dataset = gdal.Open(dest_path)
-    jpg_path = os.path.join(output_dir, base + ".jpg")
-    gdal.Translate(
-        jpg_path,
-        reprojected_dataset,
-        format="JPEG",
-        creationOptions=["WORLDFILE=YES", "QUALITY=80"],
-    )
-    reprojected_dataset = None
-    dataset = None
-    os.remove(dest_path)
-    return {"jpg_path": jpg_path, "aux_xml_path": jpg_path + ".aux.xml"}
+    # create a temp workspace for everything
+    with tempfile.TemporaryDirectory() as tmpdir:
+        tmp_tif = os.path.join(tmpdir, f"{base}_to_{config.TARGET_EPSG}.tif")
+
+        # reproject or copy into tmp_tif
+        info_json = gdal.Info(file_path, format="json")
+        src_epsg = _extract_epsg(info_json, file_path)
+        print(f"Source EPSG: {src_epsg} for {base}")
+        if src_epsg is None:
+            print(f"[WARN] Cannot determine CRS for {file_path}; skipping.")
+            return None
+
+        if src_epsg == config.TARGET_EPSG:
+            gdal.Translate(tmp_tif, file_path, format="GTiff")
+        else:
+            warp_opts = gdal.WarpOptions(
+                srcSRS=f"EPSG:{src_epsg}", dstSRS=f"EPSG:{config.TARGET_EPSG}", multithread=True
+            )
+            gdal.Warp(tmp_tif, file_path, options=warp_opts)
+
+        # produce the final JPEG _inside_ tmpdir
+        tmp_jpg = os.path.join(tmpdir, f"{base}.jpg")
+        gdal.Translate(
+            tmp_jpg,
+            tmp_tif,
+            format="JPEG",
+            creationOptions=["WORLDFILE=YES", "QUALITY=80"],
+        )
+
+        # debug print on the just‐created JPG
+        _print_epsg_bbox("Temp JPG", tmp_jpg)
+
+        # now atomically move just the JPG + sidecar into your real output_dir
+        os.makedirs(output_dir, exist_ok=True)
+        final_jpg = os.path.join(output_dir, os.path.basename(tmp_jpg))
+        final_aux = final_jpg + ".aux.xml"
+        shutil.move(tmp_jpg, final_jpg)
+        # the .aux.xml will also be in tmpdir, so move it too if it exists
+        tmp_aux = tmp_jpg + ".aux.xml"
+        if os.path.exists(tmp_aux):
+            shutil.move(tmp_aux, final_aux)
+
+    # by the time we get here, tmpdir is cleaned up automatically
+    # and only final_jpg (+ .aux.xml) live in output_dir
+    return {"jpg_path": final_jpg, "aux_xml_path": final_aux}
 
 
 def _secondary_process(file_path: str, output_dir: str) -> Optional[dict]:
@@ -385,22 +507,20 @@ def _secondary_process(file_path: str, output_dir: str) -> Optional[dict]:
 
 
 def process_tiff(path: str, output_dir: str) -> Optional[str]:
-    """Process a GeoTIFF using primary and secondary pipelines."""
-    if not (path.lower().endswith(".tif") or path.lower().endswith(".tiff")):
-        raise ValueError(f"Expected a .tif/.tiff file, got: {path}")
-
     base = os.path.splitext(os.path.basename(path))[0]
 
+    # 1st try the primary pipeline
     res = _primary_process(path, output_dir)
     if res:
-        info = _gdalinfo_json(res["jpg_path"])
+        info = gdal.Info(res["jpg_path"], format="json")
         bbox = _bbox_from_info(info)
         if bbox and _bbox_valid(bbox):
             return res["jpg_path"]
 
+    # fallback to secondary
     res = _secondary_process(path, output_dir)
     if res:
-        info = _gdalinfo_json(res["jpg_path"])
+        info = gdal.Info(res["jpg_path"], format="json")
         bbox = _bbox_from_info(info)
         if bbox and _bbox_valid(bbox):
             return res["jpg_path"]
@@ -409,3 +529,46 @@ def process_tiff(path: str, output_dir: str) -> Optional[str]:
     _move_to_failed(path)
     return None
 
+def _create_vrt_with_worldfile(tif_path: str) -> str:
+    """Create a VRT that explicitly references the world file."""
+    import tempfile
+    
+    base = os.path.splitext(os.path.basename(tif_path))[0]
+    stem = Path(tif_path).with_suffix("")
+    tfw_path = stem.with_suffix(".tfw")
+    
+    if not tfw_path.exists():
+        return tif_path  # No world file, return original
+    
+    # Read world file parameters
+    try:
+        with open(tfw_path, 'r') as f:
+            lines = [line.strip() for line in f.readlines()]
+        if len(lines) >= 6:
+            pixel_x_size = float(lines[0])
+            rotation_y = float(lines[1])  
+            rotation_x = float(lines[2])
+            pixel_y_size = float(lines[3])  # Usually negative
+            x_origin = float(lines[4])
+            y_origin = float(lines[5])
+            
+            # Create temporary VRT
+            vrt_path = os.path.join(tempfile.gettempdir(), f"{base}_with_worldfile.vrt")
+            
+            # Use gdal.Translate to create VRT with proper geotransform
+            gdal.Translate(
+                vrt_path,
+                tif_path,
+                format="VRT",
+                outputSRS="EPSG:26914",  # Your source EPSG
+                GCPs=None,
+                outputBounds=None,
+                # Set the geotransform explicitly
+                options=[f"-a_ullr {x_origin} {y_origin + pixel_y_size * 0} {x_origin + pixel_x_size * 0} {y_origin}"]
+            )
+            
+            return vrt_path
+    except Exception as e:
+        print(f"[WARN] Could not create VRT for {tif_path}: {e}")
+    
+    return tif_path
