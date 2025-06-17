@@ -28,5 +28,7 @@ The input and output folders used by `test-image` can be adjusted in `config.py`
 ## Configuration
 `config.py` defines runtime options such as JPEG quality, tile size for SID images, the number of parallel workers, and whether to enforce a geographic bounding‑box check.  Adjust these settings to match your dataset and hardware.
 
+The conversion helpers attempt to read the input image's spatial reference via `gdalinfo` and any accompanying `.aux.xml` file.  If no EPSG code can be determined, the tools still create a JPEG but only keep it when the resulting bounding box falls inside a reasonable range.
+
 ---
 After building, run one of the make commands above to start converting imagery.
