@@ -7,7 +7,8 @@ from typing import Iterable
 from concurrent.futures import ThreadPoolExecutor
 
 import config
-from convert import process_sid, process_tiff
+from sid_convert import process_sid
+from tiff_convert import process_tiff
 
 
 def _iter_files(folder: str, extensions: Iterable[str]):
