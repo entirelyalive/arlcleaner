@@ -230,18 +230,24 @@ def _secondary_process(file_path: str, output_dir: str) -> Optional[Dict]:
 
 
 def process_tiff(path: str, output_dir: str) -> Optional[str]:
+    if not path.lower().endswith(('.tif', '.tiff')):
+        raise ValueError(f"Expected a .tif or .tiff file, got: {path}")
+
     base = os.path.splitext(os.path.basename(path))[0]
+    print(f"[INFO] Starting TIFF conversion for {path}")
     res = _primary_process(path, output_dir)
     if res:
         info = gdal.Info(res["jpg_path"], format="json")
         bbox = _bbox_from_info(info)
         if bbox and _bbox_valid(bbox):
+            print(f"successfully out put {res['jpg_path']}")
             return res["jpg_path"]
     res = _secondary_process(path, output_dir)
     if res:
         info = gdal.Info(res["jpg_path"], format="json")
         bbox = _bbox_from_info(info)
         if bbox and _bbox_valid(bbox):
+            print(f"successfully out put {res['jpg_path']}")
             return res["jpg_path"]
     _log_error(base, "TIFF processing failed")
     _move_to_failed(path)

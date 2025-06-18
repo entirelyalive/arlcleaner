@@ -201,6 +201,8 @@ def process_sid(path: str, output_dir: str) -> List[str]:
     if not path.lower().endswith(".sid"):
         raise ValueError(f"Expected a .sid file, got: {path}")
 
+    print(f"[INFO] Starting SID conversion for {path}")
+
     base = os.path.splitext(os.path.basename(path))[0]
     try:
         info = _gdalinfo_json(path)
@@ -224,8 +226,10 @@ def process_sid(path: str, output_dir: str) -> List[str]:
                 guessed = _guess_epsg_and_warp(src)
                 if guessed:
                     dst = _convert_to_jpeg(guessed, output_dir, dst_name=base, quality=60)
+                    print(f"successfully out put {dst}")
                     return [dst]
                 raise RuntimeError("could not determine EPSG for SID")
+            print(f"successfully out put {dst}")
             return [dst]
         else:
             if epsg != config.TARGET_EPSG:
@@ -246,6 +250,7 @@ def process_sid(path: str, output_dir: str) -> List[str]:
         tiles: List[str] = []
         nx = math.ceil(width / config.SID_TILE_WIDTH)
         ny = math.ceil(height / config.SID_TILE_HEIGHT)
+        print(f"[DEBUG] Raster size {width}x{height}, tiling to {nx}x{ny} tiles")
         for y in range(ny):
             for x in range(nx):
                 xoff = x * config.SID_TILE_WIDTH
@@ -271,6 +276,7 @@ def process_sid(path: str, output_dir: str) -> List[str]:
                 ]
                 _run(cmd)
                 tiles.append(dst)
+                print(f"successfully out put {dst}")
         return tiles
     except Exception as exc:
         _log_error(base, str(exc))
