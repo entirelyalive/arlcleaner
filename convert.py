@@ -42,8 +42,16 @@ def _ensure_worldfile(tif_path: str) -> None:
 
 def _run(cmd: List[str]) -> subprocess.CompletedProcess:
     """Run a subprocess command quietly and return the CompletedProcess."""
-    return subprocess.run(cmd, check=True, text=True, stdout=subprocess.PIPE,
-                         stderr=subprocess.PIPE)
+    print(f"[DEBUG] Running command: {' '.join(cmd)}")
+    try:
+        result = subprocess.run(cmd, check=True, text=True, stdout=subprocess.PIPE,
+                               stderr=subprocess.PIPE)
+        return result
+    except subprocess.CalledProcessError as e:
+        print(f"[ERROR] Command failed: {' '.join(cmd)}")
+        print(f"[ERROR] stdout: {e.stdout}")
+        print(f"[ERROR] stderr: {e.stderr}")
+        raise
 
 
 def _gdalinfo_json(path: str) -> dict:
@@ -68,61 +76,75 @@ def _extract_epsg_from_aux(path: str) -> Optional[int]:
             continue
     return None
 
-def _extract_epsg(info: Dict, path: Optional[str] = None) -> Optional[int]:
+def _extract_epsg(info: dict, path: Optional[str] = None) -> Optional[int]:
     """
     Best-effort extraction of an EPSG code.
-
-    Parameters
-    ----------
-    info : dict
-        GDAL-info JSON dictionary for the dataset (may be empty).
-    path : str, optional
-        Path to the raster on disk.  Enables GDAL probing and side-car scans.
-
-    Returns
-    -------
-    int | None
-        The recognised EPSG code, or ``None`` if it cannot be determined.
     """
+    print(f"[DEBUG] Extracting EPSG for {path}")
+    
     # --- 1. whatever came back from gdalinfo --json -------------------------
     cs_info = info.get("coordinateSystem", {})
     epsg_field = cs_info.get("epsg")
     if epsg_field:
         try:
-            return int(epsg_field)
+            epsg_val = int(epsg_field)
+            print(f"[DEBUG] Found EPSG from coordinateSystem.epsg: {epsg_val}")
+            return epsg_val
         except ValueError:
             pass
 
     wkt = cs_info.get("wkt")
     if wkt:
+        print(f"[DEBUG] WKT: {wkt[:200]}...")
         m = re.search(r'AUTHORITY\["EPSG",\s*"(\d+)"\]', wkt) or \
             re.search(r"EPSG:(\d+)", wkt)
         if m:
-            return int(m.group(1))
+            epsg_val = int(m.group(1))
+            print(f"[DEBUG] Found EPSG from WKT: {epsg_val}")
+            return epsg_val
 
     # --- 2. open the raster directly with GDAL ------------------------------
     if path:
         try:
             ds = gdal.Open(path, gdal.GA_ReadOnly)
             if ds:
-                srs = osr.SpatialReference()
-                srs.ImportFromWkt(ds.GetProjection())  # empty string → no error
+                projection = ds.GetProjection()
+                print(f"[DEBUG] Direct GDAL projection: {projection[:200]}...")
+
+                srs = osr.SpatialReference(wkt=projection)
+
+                # Try the projected coordinate system first, then the geographic one
+                for node in ("PROJCS", "GEOGCS", None):
+                    code = srs.GetAuthorityCode(node)
+                    if code:
+                        epsg_val = int(code)
+                        # Ignore the geocentric spheroid code 7019 or other
+                        # codes that are known to be useless for rasters.
+                        if epsg_val == 7019:
+                            continue
+                        print(f"[DEBUG] Found EPSG from GDAL ({node}): {epsg_val}")
+                        return epsg_val
+
+                # One more try: ask GDAL to auto-identify
+                srs.AutoIdentifyEPSG()
                 code = srs.GetAuthorityCode(None)
-                if not code:
-                    srs.AutoIdentifyEPSG()             # asks GDAL’s heuristics
-                    code = srs.GetAuthorityCode(None)
-                if code:
-                    return int(code)
-        except Exception:
+                if code and int(code) != 7019:
+                    epsg_val = int(code)
+                    print(f"[DEBUG] Found EPSG from AutoIdentify: {epsg_val}")
+                    return epsg_val
+        except Exception as e:
+            print(f"[DEBUG] GDAL direct access failed: {e}")
             pass
 
     # --- 3. look for ArcGIS or ESRI side-cars -------------------------------
     if path:
         stem, _ = os.path.splitext(path)
+        print(f"[DEBUG] Checking sidecar files for {stem}")
 
-        for xml_path in (stem + ".aux.xml", stem + ".prj", path):
+        for xml_path in (stem + ".aux.xml", stem + ".prj", path + ".aux.xml"):
             if not os.path.exists(xml_path):
                 continue
+            print(f"[DEBUG] Found sidecar: {xml_path}")
             try:
                 tree = ET.parse(xml_path)
                 root = tree.getroot()
@@ -131,26 +153,37 @@ def _extract_epsg(info: Dict, path: Optional[str] = None) -> Optional[int]:
                 for tag in ("WKID", "LatestWKID"):
                     elem = root.find(f".//{{*}}{tag}")
                     if elem is not None and elem.text and elem.text.isdigit():
-                        return int(elem.text)
+                        epsg_val = int(elem.text)
+                        print(f"[DEBUG] Found EPSG from {tag}: {epsg_val}")
+                        return epsg_val
 
                 # (b) EPSG authority embedded in WKT text
                 wkt_elem = root.find(".//{*}WKT")
                 if wkt_elem is not None and wkt_elem.text:
+                    print(f"[DEBUG] Sidecar WKT: {wkt_elem.text[:200]}...")
                     m = re.search(r'AUTHORITY\["EPSG",\s*"(\d+)"\]', wkt_elem.text)
                     if m:
-                        return int(m.group(1))
+                        epsg_val = int(m.group(1))
+                        print(f"[DEBUG] Found EPSG from sidecar WKT: {epsg_val}")
+                        return epsg_val
             except ET.ParseError:
                 # *.prj* files are plain text  treat the whole file as WKT
                 with open(xml_path, "r", encoding="utf-8", errors="ignore") as fh:
                     content = fh.read()
+                print(f"[DEBUG] PRJ content: {content[:200]}...")
                 m = re.search(r'AUTHORITY\["EPSG",\s*"(\d+)"\]', content) or \
                     re.search(r"EPSG:(\d+)", content)
                 if m:
-                    return int(m.group(1))
-            except Exception:
+                    epsg_val = int(m.group(1))
+                    print(f"[DEBUG] Found EPSG from PRJ: {epsg_val}")
+                    return epsg_val
+            except Exception as e:
+                print(f"[DEBUG] Error parsing {xml_path}: {e}")
                 pass
 
+    print(f"[DEBUG] No EPSG found for {path}")
     return None
+
 
 def _bbox_from_info(info: dict) -> Optional[tuple]:
     corners = info.get("cornerCoordinates")
@@ -271,13 +304,24 @@ def _convert_to_jpeg(src: str, dst_dir: str, *, dst_name: Optional[str] = None,
         f"QUALITY={quality}",
         "-co",
         "WORLDFILE=YES",
-        "-co",
-        "TILED=YES",
+        # The JPEG driver does not understand TILED – it is for JPEG-in-TIFF
     ]
 
     subprocess.run(cmd, check=True)
     return dst
 
+
+def _validate_epsg(epsg: int) -> bool:
+    """Check if an EPSG code is suitable for imagery processing."""
+    # EPSG:7019 is geocentric - not suitable for imagery
+    # Add other problematic codes as needed
+    problematic_codes = {7019}  # Geocentric coordinate systems
+    
+    if epsg in problematic_codes:
+        print(f"[WARN] EPSG:{epsg} is not suitable for imagery processing")
+        return False
+    
+    return True
 
 def process_sid(path: str, output_dir: str) -> List[str]:
     """Process a MrSID image, convert to EPSG:4269 and tile to GeoJPEGs."""
@@ -295,22 +339,39 @@ def process_sid(path: str, output_dir: str) -> List[str]:
 
     epsg = _extract_epsg(info, path)
     
+    # Validate the EPSG code
+    if epsg is not None and not _validate_epsg(epsg):
+        print(f"[WARN] Invalid EPSG:{epsg} detected for {path}, trying to guess...")
+        epsg = None
+    
     src = path
     tmp_files = []
 
     try:
         if epsg is None:
+            print(f"[INFO] No valid EPSG found for {path}, attempting direct conversion...")
             dst = _convert_to_jpeg(src, output_dir, dst_name=base, quality=60)
             info = _gdalinfo_json(dst)
             bbox = _bbox_from_info(info)
             if not bbox or not _bbox_valid(bbox):
-                raise RuntimeError("could not determine EPSG for SID")
+                print(f"[INFO] Direct conversion failed, trying EPSG guessing...")
+                # Try the guessing approach
+                guessed_path = _guess_epsg_and_warp(src)
+                if guessed_path:
+                    dst = _convert_to_jpeg(guessed_path, output_dir, dst_name=base, quality=60)
+                    return [dst]
+                else:
+                    raise RuntimeError("could not determine EPSG for SID")
             return [dst]
-        elif epsg != 4269:
-            tmp = os.path.join(output_dir, base + "_warp.tif")
-            _warp_to_4269(src, tmp, epsg)
-            src = tmp
-            tmp_files.append(tmp)
+        else:
+            # We now have a *valid* EPSG.  Tile it – the single-file
+            # conversion would either exceed libjpeg’s 65 500-pixel limit
+            # or create an unusable output.
+            if epsg != 4269:
+                tmp = os.path.join(output_dir, base + "_warp.tif")
+                _warp_to_4269(src, tmp, epsg)
+                src = tmp
+                tmp_files.append(tmp)
         info = _gdalinfo_json(src)
         bbox = _bbox_from_info(info)
         if not bbox or not _bbox_valid(bbox):
@@ -341,8 +402,6 @@ def process_sid(path: str, output_dir: str) -> List[str]:
                     f"QUALITY={60}",
                     "-co",
                     "WORLDFILE=YES",
-                    "-co",
-                    "TILED=YES",
                     "-srcwin",
                     str(xoff),
                     str(yoff),
