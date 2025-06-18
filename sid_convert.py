@@ -200,9 +200,7 @@ def process_sid(path: str, output_dir: str) -> List[str]:
     """Convert a MrSID image to tiled GeoJPEGs in the target projection."""
     if not path.lower().endswith(".sid"):
         raise ValueError(f"Expected a .sid file, got: {path}")
-
     print(f"[INFO] Starting SID conversion for {path}")
-
     base = os.path.splitext(os.path.basename(path))[0]
     try:
         info = _gdalinfo_json(path)
